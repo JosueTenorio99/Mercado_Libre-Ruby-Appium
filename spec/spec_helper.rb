@@ -3,8 +3,9 @@ $stdout.sync = true
 
 require 'appium_lib'
 require_relative '../config/capabilities'
-# --- Allure: habilitar formatter sin tocar lógica de tests ---
 require 'allure-rspec'
+require 'fileutils'
+require 'base64'
 
 Allure.configure do |c|
   c.results_directory = 'reports/allure-results'
@@ -19,10 +20,6 @@ def driver_config
   { caps: CONFIG, appium_lib: { server_url: 'http://127.0.0.1:4723' } }
 end
 
-# --- helpers locales para screenshot en fallos (sin requerir BasePage) ---
-require 'fileutils'
-require 'base64'
-
 def current_test_class_name_from(example)
   if example.example_group.respond_to?(:described_class) && example.example_group.described_class
     example.example_group.described_class.name
@@ -36,12 +33,10 @@ def current_test_class_name_from(example)
 end
 
 def save_failure_screenshot(driver, example)
-  # carpeta por clase de test
   klass = current_test_class_name_from(example)
   folder = File.join('screenshots', klass)
   FileUtils.mkdir_p(folder) rescue nil
 
-  # nombre simple: usa enumeración por hilo para evitar colisiones
   Thread.current[:screenshot_index] = (Thread.current[:screenshot_index] || 0) + 1
   prefix    = format('%02d', Thread.current[:screenshot_index])
   timestamp = Time.now.strftime('%Y%m%d-%H%M%S-%L')
@@ -56,9 +51,7 @@ def save_failure_screenshot(driver, example)
     driver.driver.save_screenshot(path)
   end
 rescue
-  # silencioso por diseño
 end
-# --- fin helpers ---
 
 RSpec.configure do |config|
   config.before(:suite) do
@@ -66,12 +59,10 @@ RSpec.configure do |config|
     Appium.promote_appium_methods Object
   end
 
-  # reinicia enumeración por ejemplo (para naming consistente)
   config.before(:each) do
     Thread.current[:screenshot_index] = 0
   end
 
-  # Captura automática si el ejemplo falla (sin requerir BasePage)
   config.after(:each) do |example|
     if example.exception && $driver&.session_id
       save_failure_screenshot($driver, example)
@@ -95,36 +86,128 @@ RSpec.configure do |config|
     css_file = File.join(css_dir, "styles.css")
 
     unless File.exist?(css_file)
-      puts "[INFO] Aún no existe el reporte Allure, ejecuta primero: allure generate o allure serve"
+      warn "[WARN] Allure report not found, run: allure generate or allure serve"
       return
     end
 
     css_code = <<~CSS
+      img {
+        max-width: 30% !important;  
+        height: auto !important;
+        border-radius: 8px;
+        box-shadow: 0 0 10px rgba(0,0,0,0.25);
+        margin: 12px auto;
+        display: block;
+      }
 
-    img {
-      max-width: 30% !important;  
-      height: auto !important;
-      border-radius: 8px;
-      box-shadow: 0 0 10px rgba(0,0,0,0.25);
-      margin: 12px auto;
-      display: block;
-    }
-
-    /* Fondo gris suave y centrado */
-    .attachment__content {
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      background-color: #f3f3f3;
-      padding: 12px;
-      border-radius: 10px;
-    }
-
+      .attachment__content {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        background-color: #f3f3f3;
+        padding: 12px;
+        border-radius: 10px;
+      }
     CSS
 
     File.open(css_file, 'a') { |f| f.puts css_code }
-    puts "[INFO] ✅ Estilo personalizado añadido al reporte (#{css_file})"
   end
 
+  require 'open3'
 
+  # === Video recording with adb and Allure ===
+  config.before(:each) do |example|
+    begin
+      @video_dir = File.join('reports', 'videos')
+      FileUtils.mkdir_p(@video_dir) rescue nil
+
+      safe_name = example.full_description.gsub(/[^\w\-]+/, '_')[0..60]
+      @video_file = File.join(@video_dir, "#{safe_name}_#{Time.now.strftime('%Y%m%d-%H%M%S')}.mp4")
+
+      @adb_pid = spawn("adb shell screenrecord --size 540x960 /sdcard/test_record.mp4", out: '/dev/null', err: '/dev/null')
+      sleep 1
+    rescue => e
+      warn "[WARN] Could not start video recording: #{e.class} - #{e.message}"
+    end
+  end
+
+  config.after(:each) do |example|
+    begin
+      if @adb_pid
+        Process.kill('INT', @adb_pid) rescue nil
+        Process.wait(@adb_pid) rescue nil
+        sleep 1
+
+        system("adb pull /sdcard/test_record.mp4 \"#{@video_file}\"")
+        system("adb shell rm /sdcard/test_record.mp4")
+
+        if File.exist?(@video_file)
+          Allure.add_attachment(
+            name: "Video - #{example.description}",
+            source: File.open(@video_file, 'rb'),
+            type: Allure::ContentType::WEBM,
+            test_case: true
+          )
+        else
+          warn "[WARN] Video file not found to attach"
+        end
+      end
+    rescue => e
+      warn "[ERROR] Video processing failed: #{e.class} - #{e.message}"
+    end
+  end
+  # === End of video recording ===
+
+  # === Capture STDOUT and attach to Allure ===
+  config.around(:each) do |example|
+    require 'stringio'
+
+    old_stdout = $stdout
+    buffer = StringIO.new
+
+    $stdout = Class.new do
+      def initialize(console, capture)
+        @console = console
+        @capture = capture
+      end
+
+      def write(str)
+        @console.write(str)
+        @capture.write(str)
+      end
+
+      def flush
+        @console.flush
+        @capture.flush
+      end
+    end.new(old_stdout, buffer)
+
+    begin
+      example.run
+    ensure
+      $stdout = old_stdout
+      output = buffer.string
+
+      log_dir = File.join('reports', 'logs')
+      FileUtils.mkdir_p(log_dir) rescue nil
+
+      safe_name = example.full_description.gsub(/[^\w\-]+/, '_')[0..60]
+      log_file = File.join(log_dir, "#{safe_name}_#{Time.now.strftime('%Y%m%d-%H%M%S')}.log")
+      File.write(log_file, output)
+
+      if defined?(Allure) && !output.strip.empty?
+        begin
+          Allure.add_attachment(
+            name: "Console Output",
+            source: File.open(log_file, 'rb'),
+            type: Allure::ContentType::TXT,
+            test_case: true
+          )
+        rescue StandardError => e
+          warn "[Allure] Could not attach console output: #{e.class} #{e.message}"
+        end
+      end
+    end
+  end
+  # === End of STDOUT capture ===
 end

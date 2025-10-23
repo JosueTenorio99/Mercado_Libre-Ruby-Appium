@@ -2,6 +2,7 @@
 require 'fileutils'
 require 'base64'
 require 'set'
+require 'tempfile'
 
 class BasePage
   attr_reader :driver
@@ -10,7 +11,6 @@ class BasePage
     @driver = driver
   end
 
-  # Screenshot state
   def remember_last_action(sym)
     @__last_action = sym.to_s
   end
@@ -23,7 +23,6 @@ class BasePage
     Thread.current[:screenshot_index] = (Thread.current[:screenshot_index] || 0) + 1
   end
 
-  # Waits & element queries
   def wait_until(timeout: 3.0, interval: 0.10)
     deadline = monotonic_now + timeout.to_f
     loop do
@@ -34,7 +33,6 @@ class BasePage
     false
   end
 
-  # Always returns an array
   def elements(locator)
     driver.find_elements(*normalize(locator))
   rescue StandardError
@@ -49,7 +47,6 @@ class BasePage
     driver.find_element(*normalize(locator))
   end
 
-  # Waits for element; optionally validates with a block
   def try_find(locator, timeout: 3.0, interval: 0.10)
     el = nil
     ok = wait_until(timeout: timeout, interval: interval) do
@@ -59,7 +56,7 @@ class BasePage
     ok ? el : nil
   end
 
-  def click(locator, timeout: 3.0)
+  def click(locator, timeout: 6.0)
     el = try_find(locator, timeout: timeout) { |e| interactable?(e) }
     raise "No clickable: #{locator.inspect}" unless el
     el.click
@@ -79,15 +76,8 @@ class BasePage
     list
   end
 
-  # Screenshots
-  # path: pages/base_page.rb
-  # path: pages/base_page.rb
-  require 'base64'
-  require 'tempfile'
-
   def save_SCREENSHOT(name: nil, folder: nil, wait_for_idle: true, settle_ms: 180)
     settle_for_screenshot(settle_ms: settle_ms) if wait_for_idle
-
     test_class  = current_test_class_name
     base_folder = folder || File.join("screenshots", test_class)
     FileUtils.mkdir_p(base_folder) rescue nil
@@ -101,16 +91,13 @@ class BasePage
 
     write_screenshot!(path)
 
-    # === Adjuntar a Allure de forma segura (archivo temporal binario) ===
     if defined?(Allure)
       begin
         png_data = File.binread(path)
-
         Tempfile.create(["allure_attachment_", ".png"]) do |tmp|
           tmp.binmode
           tmp.write(png_data)
           tmp.flush
-
           Allure.add_attachment(
             name: base,
             source: File.open(tmp.path, 'rb'),
@@ -119,19 +106,12 @@ class BasePage
           )
         end
       rescue => e
-        warn "[Allure] No se pudo adjuntar screenshot #{path}: #{e.class}: #{e.message}"
+        warn "[Allure] Failed to attach screenshot #{path}: #{e.class}: #{e.message}"
       end
     end
-
     path
   end
 
-
-
-
-
-
-  # (opcional) helper para adjuntar texto/logs cuando lo necesites
   def attach_text_to_allure(name, text)
     Allure.add_attachment(
       name: name.to_s,
@@ -140,19 +120,14 @@ class BasePage
       test_case: true
     )
   rescue StandardError
-    # silencioso
   end
 
-
-  # UI idle detection
   def ui_loading_present?
     xpaths = [
       '//android.widget.ProgressBar',
       '//*[@resource-id="android:id/progress"]',
-      '//*[contains(@text,"Cargando")]',
-      '//*[contains(@text,"loading")]',
-      '//*[contains(@content-desc,"Cargando")]',
-      '//*[contains(@content-desc,"loading")]'
+      '//*[contains(@text,"Loading")]',
+      '//*[contains(@content-desc,"Loading")]'
     ]
     xpaths.any? { |xp| driver.find_elements(xpath: xp)&.any? }
   rescue StandardError
@@ -160,8 +135,8 @@ class BasePage
   end
 
   def wait_for_ui_idle(timeout: 5.0, stable_duration: 0.4, poll: 0.08)
-    deadline     = monotonic_now + timeout
-    prev_sig     = nil
+    deadline = monotonic_now + timeout
+    prev_sig = nil
     stable_since = nil
 
     while monotonic_now < deadline
@@ -178,7 +153,6 @@ class BasePage
     false
   end
 
-  # Scroll & DOM change helpers
   def page_signature
     driver.page_source.hash
   rescue StandardError
@@ -208,20 +182,18 @@ class BasePage
   def wait_dom_change_or_new(card_xpath:, old_sig:, old_count:, timeout: 1.4, poll: 0.05)
     deadline = monotonic_now + timeout
     while monotonic_now < deadline
-      sig   = page_signature
+      sig = page_signature
       count = driver.find_elements(xpath: card_xpath).size
       return :new_items if count > old_count
-      return :changed   if sig != old_sig
+      return :changed if sig != old_sig
       sleep poll
     end
     :no_change
   end
 
-  # Generic collection with early exit
   def first_n_by_scroll(card_xpath:, extractor:, max:, max_scrolls: 3)
-    productos, precios = [], []
+    products, prices = [], []
     seen_keys = Set.new
-
     consecutive_nochange = 0
     pushes_total = 0
 
@@ -233,15 +205,14 @@ class BasePage
         key ||= "#{name}|#{price}"
         next if seen_keys.include?(key)
 
-        productos << name
-        precios  << price
+        products << name
+        prices << price
         seen_keys << key
-        return [productos.first(max), precios.first(max)] if productos.size >= max
+        return [products.first(max), prices.first(max)] if products.size >= max
       end
 
       before_keys = snapshot_keys(card_xpath, extractor)
-
-      old_sig   = page_signature
+      old_sig = page_signature
       old_count = driver.find_elements(xpath: card_xpath).size
       break unless scroll_down(percent: 0.96)
 
@@ -266,14 +237,11 @@ class BasePage
           break unless pushed_keys == after_keys
         end
       end
-
       break if consecutive_nochange >= 2
     end
-
-    [productos.first(max), precios.first(max)]
+    [products.first(max), prices.first(max)]
   end
 
-  # Search/scroll helpers
   def scroll_to_text(text, max_swipes: 16, container_uiautomator: nil)
     uis = []
     if container_uiautomator
@@ -312,7 +280,6 @@ class BasePage
     false
   end
 
-  # Element utilities
   def largest_by_bounds(elements)
     elements.max_by do |el|
       b = safe_call { el.attribute('bounds') }
@@ -328,33 +295,26 @@ class BasePage
     (text || '').downcase.include?(needle.to_s.downcase)
   end
 
-  # Title heuristic (filters ratings/badges/numerics)
   def looks_like_title?(text)
     t = (text || '').strip
     return false if t.empty?
-
     td = t.downcase
     banned = %w[
-      gratis envío env\u00eo llega mañana hoy cuotas meses oferta % off descuento prime full seller vendedor
-      tienda oficial oficial store patrocinado anuncio visit marca brand garantía vendidos vendido
-      opiniones opinión reseñas reseña review reviews calificación rating puntos estrella estrellas
+      free shipping arrives tomorrow today offer discount prime full seller store official brand warranty sold reviews rating stars
     ]
     return false if banned.any? { |w| td.include?(w) }
-
     return false if t =~ /\A[\s\-\+\|\.,\d]+\z/
     return false if t =~ /\b\d(?:\.\d)?\s*\|\s*\+\d/
     return false if t =~ /★|⭐|☆/
-
     has_letters = t.count('A-Za-zÁÉÍÓÚáéíóúÜüÑñ') >= 3
     return false unless has_letters
     return false if t.length < 8
     t.split.size >= 2
   end
 
-  # Bounds helpers
   def bounds_rect(el)
     b = safe_call { el.attribute('bounds') }
-    return [0,0,0,0] unless b && b =~ /\[(\d+),(\d+)\]\[(\d+),(\d+)\]/
+    return [0, 0, 0, 0] unless b && b =~ /\[(\d+),(\d+)\]\[(\d+),(\d+)\]/
     [$1.to_i, $2.to_i, $3.to_i, $4.to_i]
   end
 
@@ -365,7 +325,6 @@ class BasePage
 
   private
 
-  # Private utilities
   def interactable?(el)
     (el.displayed? rescue true) && (el.enabled? rescue true)
   end
@@ -379,7 +338,6 @@ class BasePage
     end.compact
   end
 
-  # Short, non-blocking settle before taking a screenshot
   def settle_for_screenshot(settle_ms:)
     begin
       ctx = driver.respond_to?(:current_context) ? driver.current_context.to_s : ''
@@ -394,7 +352,6 @@ class BasePage
         sleep([settle_ms, 200].min / 1000.0)
       end
     rescue StandardError
-      # Never block screenshot flow on settle errors
     end
   end
 
@@ -415,8 +372,6 @@ class BasePage
     raise NoMethodError, 'No public screenshot method available (save_screenshot / screenshot_as).'
   end
 
-
-  # Derive current test class name (RSpec)
   def current_test_class_name
     return 'UnknownSpec' unless defined?(RSpec) && RSpec.respond_to?(:current_example) && RSpec.current_example
     group = RSpec.current_example.example_group rescue nil
@@ -433,8 +388,8 @@ class BasePage
     key = locator.keys.first
     val = locator.values.first
     case key.to_sym
-    when :id               then [:id, val]
-    when :xpath            then [:xpath, val]
+    when :id then [:id, val]
+    when :xpath then [:xpath, val]
     when :accessibility_id then [:accessibility_id, val]
     else [key.to_sym, val]
     end
@@ -446,7 +401,6 @@ class BasePage
     nil
   end
 
-  # Monotonic clock for time-sensitive waits
   def monotonic_now
     Process.clock_gettime(Process::CLOCK_MONOTONIC)
   end

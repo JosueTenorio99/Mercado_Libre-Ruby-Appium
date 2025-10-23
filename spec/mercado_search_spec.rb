@@ -12,7 +12,7 @@ RSpec.describe 'Mercado Libre Search Flow' do
     @results = ResultsPage.new(@driver)
   end
 
-  it 'busca productos y aplica filtros con capturas de pantalla' do
+  it 'search products and applies filters with screenshots' do
     @start.click_CONTINUE_AS_GUEST_BUTTON
     @start.save_SCREENSHOT
 
@@ -28,22 +28,18 @@ RSpec.describe 'Mercado Libre Search Flow' do
     @results.save_SCREENSHOT
 
     @results.click_CONDITION_BUTTON
-    #sleep 1
     @results.save_SCREENSHOT
 
     @results.click_OPTION_NEW
     @results.save_SCREENSHOT
 
     @results.scroll_until_SORT_BY_BUTTON
-    # sleep 3
     @results.save_SCREENSHOT
 
     @results.click_SORT_BY_BUTTON
-    #sleep 2
     @results.save_SCREENSHOT
 
     @results.click_SORT_BY_PRICE_DESC_BTN
-    #sleep 1
     @results.save_SCREENSHOT
 
     @results.click_VIEW_RESULTS_BUTTON
@@ -52,4 +48,4 @@ RSpec.describe 'Mercado Libre Search Flow' do
     @results.collect_products_and_prices(max: 5)
     @results.save_SCREENSHOT
   end
-  end
+end
