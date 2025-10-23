@@ -18,6 +18,7 @@ RSpec.describe 'Mercado Libre Search Flow' do
 
     @home.click_SEARCH_BAR
     @home.save_SCREENSHOT
+
     @home.send_keys_SEARCH_INPUT_and_submit('PlayStation 5')
     @home.save_SCREENSHOT
 
@@ -27,16 +28,13 @@ RSpec.describe 'Mercado Libre Search Flow' do
     @results.click_DELIVERY_FULL_if_present
     @results.save_SCREENSHOT
 
-    @results.click_CONDITION_BUTTON
+    @results.scroll_until_OPTION_NEW
     @results.save_SCREENSHOT
 
     @results.click_OPTION_NEW
     @results.save_SCREENSHOT
 
-    @results.scroll_until_SORT_BY_BUTTON
-    @results.save_SCREENSHOT
-
-    @results.click_SORT_BY_BUTTON
+    @results.scroll_until_SORT_BY_PRICE_DESC_BTN
     @results.save_SCREENSHOT
 
     @results.click_SORT_BY_PRICE_DESC_BTN

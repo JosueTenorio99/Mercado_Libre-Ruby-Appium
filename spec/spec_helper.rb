@@ -6,6 +6,7 @@ require_relative '../config/capabilities'
 require 'allure-rspec'
 require 'fileutils'
 require 'base64'
+require 'open3'
 
 Allure.configure do |c|
   c.results_directory = 'reports/allure-results'
@@ -13,7 +14,15 @@ Allure.configure do |c|
 end
 
 RSpec.configure do |config|
+  # Allure report formatter
   config.add_formatter 'AllureRspecFormatter'
+
+  # Console output formatter (you can use 'progress' for dots)
+  config.add_formatter 'documentation'
+
+  # Force RSpec to print to real console
+  config.output_stream = $stdout
+  config.error_stream  = $stderr
 end
 
 def driver_config
@@ -40,8 +49,7 @@ def save_failure_screenshot(driver, example)
   Thread.current[:screenshot_index] = (Thread.current[:screenshot_index] || 0) + 1
   prefix    = format('%02d', Thread.current[:screenshot_index])
   timestamp = Time.now.strftime('%Y%m%d-%H%M%S-%L')
-  base      = 'failure'
-  path      = File.join(folder, "#{prefix}_#{base}_#{timestamp}.png")
+  path      = File.join(folder, "#{prefix}_failure_#{timestamp}.png")
 
   if driver.respond_to?(:save_screenshot)
     driver.save_screenshot(path)
@@ -54,6 +62,7 @@ rescue
 end
 
 RSpec.configure do |config|
+  # === Appium driver setup ===
   config.before(:suite) do
     $driver = Appium::Driver.new(driver_config, true).start_driver
     Appium.promote_appium_methods Object
@@ -63,6 +72,7 @@ RSpec.configure do |config|
     Thread.current[:screenshot_index] = 0
   end
 
+  # === Screenshot on failure ===
   config.after(:each) do |example|
     if example.exception && $driver&.session_id
       save_failure_screenshot($driver, example)
@@ -75,24 +85,26 @@ RSpec.configure do |config|
     end
   end
 
+  # === Quit driver after suite ===
   config.after(:suite) do
     if $driver&.session_id
       $driver.quit rescue nil
     end
   end
 
+  # === Add Allure custom CSS ===
   def add_allure_custom_style
-    css_dir = File.join("reports", "allure-report")
-    css_file = File.join(css_dir, "styles.css")
+    css_dir = File.join('reports', 'allure-report')
+    css_file = File.join(css_dir, 'styles.css')
 
     unless File.exist?(css_file)
-      warn "[WARN] Allure report not found, run: allure generate or allure serve"
+      warn '[WARN] Allure report not found, run: allure generate or allure serve'
       return
     end
 
     css_code = <<~CSS
       img {
-        max-width: 30% !important;  
+        max-width: 30% !important;
         height: auto !important;
         border-radius: 8px;
         box-shadow: 0 0 10px rgba(0,0,0,0.25);
@@ -113,8 +125,6 @@ RSpec.configure do |config|
     File.open(css_file, 'a') { |f| f.puts css_code }
   end
 
-  require 'open3'
-
   # === Video recording with adb and Allure ===
   config.before(:each) do |example|
     begin
@@ -124,7 +134,7 @@ RSpec.configure do |config|
       safe_name = example.full_description.gsub(/[^\w\-]+/, '_')[0..60]
       @video_file = File.join(@video_dir, "#{safe_name}_#{Time.now.strftime('%Y%m%d-%H%M%S')}.mp4")
 
-      @adb_pid = spawn("adb shell screenrecord --size 540x960 /sdcard/test_record.mp4", out: '/dev/null', err: '/dev/null')
+      @adb_pid = spawn('adb shell screenrecord --size 540x960 /sdcard/test_record.mp4', out: '/dev/null', err: '/dev/null')
       sleep 1
     rescue => e
       warn "[WARN] Could not start video recording: #{e.class} - #{e.message}"
@@ -139,7 +149,7 @@ RSpec.configure do |config|
         sleep 1
 
         system("adb pull /sdcard/test_record.mp4 \"#{@video_file}\"")
-        system("adb shell rm /sdcard/test_record.mp4")
+        system('adb shell rm /sdcard/test_record.mp4')
 
         if File.exist?(@video_file)
           Allure.add_attachment(
@@ -149,7 +159,7 @@ RSpec.configure do |config|
             test_case: true
           )
         else
-          warn "[WARN] Video file not found to attach"
+          warn '[WARN] Video file not found to attach'
         end
       end
     rescue => e
@@ -158,14 +168,15 @@ RSpec.configure do |config|
   end
   # === End of video recording ===
 
-  # === Capture STDOUT and attach to Allure ===
+  # === Capture STDOUT and STDERR, and attach to Allure ===
   config.around(:each) do |example|
     require 'stringio'
 
     old_stdout = $stdout
+    old_stderr = $stderr
     buffer = StringIO.new
 
-    $stdout = Class.new do
+    writer_class = Class.new do
       def initialize(console, capture)
         @console = console
         @capture = capture
@@ -174,18 +185,24 @@ RSpec.configure do |config|
       def write(str)
         @console.write(str)
         @capture.write(str)
+        @console.flush
+        @capture.flush
       end
 
       def flush
         @console.flush
         @capture.flush
       end
-    end.new(old_stdout, buffer)
+    end
+
+    $stdout = writer_class.new(old_stdout, buffer)
+    $stderr = writer_class.new(old_stderr, buffer)
 
     begin
       example.run
     ensure
       $stdout = old_stdout
+      $stderr = old_stderr
       output = buffer.string
 
       log_dir = File.join('reports', 'logs')
@@ -198,16 +215,16 @@ RSpec.configure do |config|
       if defined?(Allure) && !output.strip.empty?
         begin
           Allure.add_attachment(
-            name: "Console Output",
+            name: 'Console Output',
             source: File.open(log_file, 'rb'),
             type: Allure::ContentType::TXT,
             test_case: true
           )
         rescue StandardError => e
-          warn "[Allure] Could not attach console output: #{e.class} #{e.message}"
+          old_stderr.write("[Allure] Could not attach console output: #{e.class} #{e.message}\n")
         end
       end
     end
   end
-  # === End of STDOUT capture ===
+  # === End of STDOUT/STDERR capture ===
 end

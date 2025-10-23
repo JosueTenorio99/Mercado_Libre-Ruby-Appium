@@ -56,25 +56,101 @@ class BasePage
     ok ? el : nil
   end
 
-  def click(locator, timeout: 6.0)
+  def click(locator, timeout: 6.0, settle: 0.35, retries: 1, smart: false, success: nil)
     el = try_find(locator, timeout: timeout) { |e| interactable?(e) }
-    raise "No clickable: #{locator.inspect}" unless el
-    el.click
-    true
+    raise "Not clickable: #{locator.inspect}" unless el
+
+    # Minimiza interferencias comunes
+    (driver.hide_keyboard rescue nil)
+
+    # Centra si está muy abajo (mejor hitbox)
+    begin
+      if smart
+        h  = driver.manage.window.size.height
+        cy = center_y(el)
+        if cy > (h * 0.87)
+          scroll_down(percent: 0.5)
+          sleep 0.12
+          el = try_find(locator, timeout: 1.0) { |e| interactable?(e) } || el
+        end
+      end
+    rescue StandardError
+    end
+
+    sleep settle
+    old_sig = page_signature
+    succeeded = false
+
+    toggle_like = lambda do |e|
+      (e.attribute('checked')  rescue 'false') == 'true' ||
+        (e.attribute('selected') rescue 'false') == 'true' ||
+        !(e.find_elements(xpath: ".//*[@checked='true' or @selected='true']") rescue []).empty?
+    end
+
+    (retries + 1).times do
+      begin
+        el.click
+      rescue Selenium::WebDriver::Error::ElementClickInterceptedError,
+        Selenium::WebDriver::Error::StaleElementReferenceError
+        el = try_find(locator, timeout: 1.2) { |e| interactable?(e) }
+        el&.click
+      end
+      sleep 0.15 if smart
+
+      if smart
+        verify = lambda do
+          ok_block = success && begin; success.call; rescue; false; end
+          ok_toggle = begin
+                        e2 = try_find(locator, timeout: 0.8) { |e| interactable?(e) }
+                        e2 && toggle_like.call(e2)
+                      rescue
+                        false
+                      end
+          ok_dom = page_signature != old_sig
+          ok_block || ok_toggle || ok_dom
+        end
+
+        succeeded = wait_until(timeout: 2.5, interval: 0.10) { verify.call }
+        break if succeeded
+      else
+        return true
+      end
+    end
+
+    # Fallback: click por coordenadas (clickGesture)
+    if smart && !succeeded
+      begin
+        ctx = driver.respond_to?(:current_context) ? driver.current_context.to_s : 'NATIVE_APP'
+        if !ctx.include?('WEBVIEW')
+          l, t, r, b = bounds_rect(el)
+          x = (l + r) / 2
+          y = (t + b) / 2
+          driver.execute_script('mobile: clickGesture', { 'x' => x, 'y' => y })
+          sleep 0.12
+          verify = lambda do
+            ok_block = success && begin; success.call; rescue; false; end
+            ok_toggle = begin
+                          e3 = try_find(locator, timeout: 0.8) { |e| interactable?(e) }
+                          e3 && toggle_like.call(e3)
+                        rescue
+                          false
+                        end
+            ok_dom = page_signature != old_sig
+            ok_block || ok_toggle || ok_dom
+          end
+          succeeded = wait_until(timeout: 2.5, interval: 0.10) { verify.call }
+        end
+      rescue StandardError
+      end
+    end
+
+    return true if smart ? succeeded : true
+    raise "Failed to click #{locator.inspect} (smart mode: no success detected)"
   end
 
-  def texts_of(locator, limit: nil, retries: 2)
-    list = []
-    attempts = 0
-    begin
-      list = elements(locator).map { |e| e.text rescue '' }
-    rescue Selenium::WebDriver::Error::StaleElementReferenceError, Selenium::WebDriver::Error::UnknownError
-      attempts += 1
-      retry if attempts <= retries
-    end
-    list = list.first(limit) if limit
-    list
-  end
+  # =====================================================
+  # Fin del método click inteligente
+  # =====================================================
 
   def save_SCREENSHOT(name: nil, folder: nil, wait_for_idle: true, settle_ms: 180)
     settle_for_screenshot(settle_ms: settle_ms) if wait_for_idle
@@ -159,23 +235,27 @@ class BasePage
     monotonic_now.to_i
   end
 
-  def scroll_down(percent: 0.95)
+  def scroll_down(percent: 0.95, column_index: 0)
     size = driver.manage.window.size
     top  = (size.height * 0.20).to_i
     h    = (size.height * 0.60).to_i
-    driver.execute_script(
-      'mobile: scrollGesture',
-      { 'left' => 0, 'top' => top, 'width' => size.width, 'height' => h,
-        'direction' => 'down', 'percent' => percent }
-    )
-    true
-  rescue StandardError
+
     begin
-      script = 'new UiScrollable(new UiSelector().scrollable(true).instance(0)).scrollForward()'
-      driver.find_element(:uiautomator, script)
+      driver.execute_script(
+        'mobile: scrollGesture',
+        { 'left' => 0, 'top' => top, 'width' => size.width, 'height' => h,
+          'direction' => 'down', 'percent' => percent }
+      )
       true
     rescue StandardError
-      false
+      # fallback to UiScrollable — use custom column index (0 = full list, 1 = right column)
+      begin
+        script = "new UiScrollable(new UiSelector().scrollable(true).instance(#{column_index})).scrollForward()"
+        driver.find_element(:uiautomator, script)
+        true
+      rescue StandardError
+        false
+      end
     end
   end
 
@@ -191,90 +271,79 @@ class BasePage
     :no_change
   end
 
-  def first_n_by_scroll(card_xpath:, extractor:, max:, max_scrolls: 3)
-    products, prices = [], []
+  def first_n_by_scroll(card_xpath:, extractor:, max:, max_scrolls: 8)
+    products = []
+    prices = []
     seen_keys = Set.new
     consecutive_nochange = 0
-    pushes_total = 0
 
     max_scrolls.times do
-      driver.find_elements(xpath: card_xpath).each do |card|
-        t = safe_call { extractor.call(card) }
-        next unless t
-        name, price, key = t
+      cards = driver.find_elements(xpath: card_xpath)
+      cards.each do |card|
+        data = safe_call { extractor.call(card) }
+        next unless data
+
+        name, price, key = data
         key ||= "#{name}|#{price}"
+
+        # Skip duplicates already seen
         next if seen_keys.include?(key)
 
         products << name
-        prices << price
+        prices  << price
         seen_keys << key
+
+        # Stop early if max reached
         return [products.first(max), prices.first(max)] if products.size >= max
       end
 
-      before_keys = snapshot_keys(card_xpath, extractor)
-      old_sig = page_signature
+      # Scroll and wait for DOM change
+      old_sig   = page_signature
       old_count = driver.find_elements(xpath: card_xpath).size
-      break unless scroll_down(percent: 0.96)
+      break unless scroll_down(percent: 0.94)
 
-      change = wait_dom_change_or_new(card_xpath: card_xpath, old_sig: old_sig, old_count: old_count, timeout: 2.0)
-      sleep 0.08 if change != :no_change
+      change = wait_dom_change_or_new(
+        card_xpath: card_xpath,
+        old_sig: old_sig,
+        old_count: old_count,
+        timeout: 2.0
+      )
 
-      after_keys = snapshot_keys(card_xpath, extractor)
-      consecutive_nochange = (change == :no_change || after_keys == before_keys) ? consecutive_nochange + 1 : 0
+      sleep 0.15 if change != :no_change
 
-      if consecutive_nochange > 0
-        pushes_this_round = 0
-        while pushes_this_round < 2 && pushes_total < 4
-          pushes_this_round += 1
-          pushes_total += 1
-          break unless scroll_down(percent: 0.985)
-          _ = wait_dom_change_or_new(card_xpath: card_xpath,
-                                     old_sig: page_signature,
-                                     old_count: driver.find_elements(xpath: card_xpath).size,
-                                     timeout: 1.0)
-          sleep 0.06
-          pushed_keys = snapshot_keys(card_xpath, extractor)
-          break unless pushed_keys == after_keys
-        end
-      end
+      consecutive_nochange = (change == :no_change) ? consecutive_nochange + 1 : 0
       break if consecutive_nochange >= 2
     end
+
     [products.first(max), prices.first(max)]
   end
 
-  def scroll_to_text(text, max_swipes: 16, container_uiautomator: nil)
+
+  def scroll_to_text(text, max_swipes: 16, column_index: 0)
     uis = []
-    if container_uiautomator
-      uis << "new UiScrollable(#{container_uiautomator}).scrollTextIntoView(\"#{text}\")"
-      uis << "new UiScrollable(#{container_uiautomator}).getChildByText(new UiSelector().className(\"android.widget.TextView\"), \"#{text}\")"
-      uis << "new UiScrollable(#{container_uiautomator}).scrollIntoView(new UiSelector().textContains(\"#{text}\"))"
-    end
     0.upto(3) do |i|
-      uis << "new UiScrollable(new UiSelector().scrollable(true).instance(#{i})).scrollTextIntoView(\"#{text}\")"
-      uis << "new UiScrollable(new UiSelector().scrollable(true).instance(#{i})).scrollIntoView(new UiSelector().textContains(\"#{text}\"))"
+      uis << "new UiScrollable(new UiSelector().scrollable(true).instance(#{column_index})).scrollTextIntoView(\"#{text}\")"
+      uis << "new UiScrollable(new UiSelector().scrollable(true).instance(#{column_index})).scrollIntoView(new UiSelector().textContains(\"#{text}\"))"
     end
+
     uis.each { |script| return true if safe_call { driver.find_element(:uiautomator, script) } }
 
     xp = "//*[contains(@text, \"#{text}\")]"
     return true if driver.find_elements(xpath: xp).any?
 
     max_swipes.times do
-      break unless scroll_down(percent: 0.96)
-      sleep 0.05
+      break unless scroll_down(percent: 0.96, column_index: column_index)
+      sleep 0.08
       return true if driver.find_elements(xpath: xp).any?
     end
     false
   end
 
-  def scroll_until(locator, max_swipes: 16, container_uiautomator: nil)
-    if container_uiautomator
-      ui = "new UiScrollable(#{container_uiautomator}).scrollIntoView(new UiSelector().xpath(\"#{normalize(locator)[1]}\"))"
-      return true if safe_call { driver.find_element(:uiautomator, ui) }
-    end
+  def scroll_until(locator, max_swipes: 16, column_index: 0)
     return true if present?(locator)
     max_swipes.times do
-      break unless scroll_down(percent: 1)
-      sleep 0.1
+      break unless scroll_down(percent: 1, column_index: column_index)
+      sleep 0.15
       return true if present?(locator)
     end
     false
@@ -298,19 +367,30 @@ class BasePage
   def looks_like_title?(text)
     t = (text || '').strip
     return false if t.empty?
+
     td = t.downcase
     banned = %w[
-      free shipping arrives tomorrow today offer discount prime full seller store official brand warranty sold reviews rating stars
-    ]
-    return false if banned.any? { |w| td.include?(w) }
-    return false if t =~ /\A[\s\-\+\|\.,\d]+\z/
-    return false if t =~ /\b\d(?:\.\d)?\s*\|\s*\+\d/
-    return false if t =~ /★|⭐|☆/
-    has_letters = t.count('A-Za-zÁÉÍÓÚáéíóúÜüÑñ') >= 3
+    gratis envío envio llega mañana hoy cuotas meses oferta ofertas % off descuento descuentos prime full
+    seller vendedor tienda tienda_oficial tienda-oficial tiendaoficial oficial store sponsored patrocinado anuncio anuncios ad ads
+    visit visita marca brand garantía garantias vendidos vendido opiniones opinión reseñas reseña review reviews calificación
+    rating puntos estrella estrellas official
+  ]
+
+    # New: take only first line (some titles include seller info below)
+    first_line = td.split("\n").first.to_s.strip
+    return false if banned.any? { |w| first_line.include?(w) }
+
+    # Basic sanity checks
+    return false if first_line =~ /\A[\s\-\+\|\.,\d]+\z/
+    return false if first_line =~ /\b\d(?:\.\d)?\s*\|\s*\+\d/
+    return false if first_line =~ /★|⭐|☆/
+
+    has_letters = first_line.count('A-Za-zÁÉÍÓÚáéíóúÜüÑñ') >= 3
     return false unless has_letters
-    return false if t.length < 8
-    t.split.size >= 2
+    return false if first_line.length < 8
+    first_line.split.size >= 2
   end
+
 
   def bounds_rect(el)
     b = safe_call { el.attribute('bounds') }
@@ -405,3 +485,7 @@ class BasePage
     Process.clock_gettime(Process::CLOCK_MONOTONIC)
   end
 end
+
+
+
+
