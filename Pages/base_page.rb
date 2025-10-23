@@ -80,6 +80,11 @@ class BasePage
   end
 
   # Screenshots
+  # path: pages/base_page.rb
+  # path: pages/base_page.rb
+  require 'base64'
+  require 'tempfile'
+
   def save_SCREENSHOT(name: nil, folder: nil, wait_for_idle: true, settle_ms: 180)
     settle_for_screenshot(settle_ms: settle_ms) if wait_for_idle
 
@@ -96,21 +101,35 @@ class BasePage
 
     write_screenshot!(path)
 
-    # 👇 NUEVO: adjuntar a Allure
-    begin
-      png_bytes = File.binread(path)
-      Allure.add_attachment(
-        name: base,                              # cómo se verá en Allure
-        source: png_bytes,
-        type: Allure::ContentType::PNG,
-        test_case: true
-      )
-    rescue StandardError
-      # no bloquees el test si fallara la lectura/adjunto
+    # === Adjuntar a Allure de forma segura (archivo temporal binario) ===
+    if defined?(Allure)
+      begin
+        png_data = File.binread(path)
+
+        Tempfile.create(["allure_attachment_", ".png"]) do |tmp|
+          tmp.binmode
+          tmp.write(png_data)
+          tmp.flush
+
+          Allure.add_attachment(
+            name: base,
+            source: File.open(tmp.path, 'rb'),
+            type: Allure::ContentType::PNG,
+            test_case: true
+          )
+        end
+      rescue => e
+        warn "[Allure] No se pudo adjuntar screenshot #{path}: #{e.class}: #{e.message}"
+      end
     end
 
     path
   end
+
+
+
+
+
 
   # (opcional) helper para adjuntar texto/logs cuando lo necesites
   def attach_text_to_allure(name, text)
@@ -395,6 +414,7 @@ class BasePage
     end
     raise NoMethodError, 'No public screenshot method available (save_screenshot / screenshot_as).'
   end
+
 
   # Derive current test class name (RSpec)
   def current_test_class_name

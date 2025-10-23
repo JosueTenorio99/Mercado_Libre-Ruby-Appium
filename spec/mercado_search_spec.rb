@@ -13,11 +13,9 @@ RSpec.describe 'Mercado Libre Search Flow' do
   end
 
   it 'busca productos y aplica filtros con capturas de pantalla' do
-    # Inicio
     @start.click_CONTINUE_AS_GUEST_BUTTON
     @start.save_SCREENSHOT
 
-    # Búsqueda
     @home.click_SEARCH_BAR
     @home.save_SCREENSHOT
     @home.send_keys_SEARCH_INPUT_and_submit('PlayStation 5')
@@ -30,29 +28,28 @@ RSpec.describe 'Mercado Libre Search Flow' do
     @results.save_SCREENSHOT
 
     @results.click_CONDITION_BUTTON
-    sleep 1
+    #sleep 1
     @results.save_SCREENSHOT
 
     @results.click_OPTION_NEW
     @results.save_SCREENSHOT
 
     @results.scroll_until_SORT_BY_BUTTON
-    sleep 1
+    # sleep 3
     @results.save_SCREENSHOT
 
     @results.click_SORT_BY_BUTTON
-    sleep 1
+    #sleep 2
     @results.save_SCREENSHOT
 
     @results.click_SORT_BY_PRICE_DESC_BTN
-    sleep 1
+    #sleep 1
     @results.save_SCREENSHOT
 
     @results.click_VIEW_RESULTS_BUTTON
-
     @results.save_SCREENSHOT
 
     @results.collect_products_and_prices(max: 5)
     @results.save_SCREENSHOT
   end
-end
+  end

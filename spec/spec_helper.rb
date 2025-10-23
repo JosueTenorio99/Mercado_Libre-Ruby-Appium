@@ -3,6 +3,17 @@ $stdout.sync = true
 
 require 'appium_lib'
 require_relative '../config/capabilities'
+# --- Allure: habilitar formatter sin tocar lógica de tests ---
+require 'allure-rspec'
+
+Allure.configure do |c|
+  c.results_directory = 'reports/allure-results'
+  c.clean_results_directory = true
+end
+
+RSpec.configure do |config|
+  config.add_formatter 'AllureRspecFormatter'
+end
 
 def driver_config
   { caps: CONFIG, appium_lib: { server_url: 'http://127.0.0.1:4723' } }
@@ -78,4 +89,42 @@ RSpec.configure do |config|
       $driver.quit rescue nil
     end
   end
+
+  def add_allure_custom_style
+    css_dir = File.join("reports", "allure-report")
+    css_file = File.join(css_dir, "styles.css")
+
+    unless File.exist?(css_file)
+      puts "[INFO] Aún no existe el reporte Allure, ejecuta primero: allure generate o allure serve"
+      return
+    end
+
+    css_code = <<~CSS
+
+    img {
+      max-width: 30% !important;  
+      height: auto !important;
+      border-radius: 8px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.25);
+      margin: 12px auto;
+      display: block;
+    }
+
+    /* Fondo gris suave y centrado */
+    .attachment__content {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background-color: #f3f3f3;
+      padding: 12px;
+      border-radius: 10px;
+    }
+
+    CSS
+
+    File.open(css_file, 'a') { |f| f.puts css_code }
+    puts "[INFO] ✅ Estilo personalizado añadido al reporte (#{css_file})"
+  end
+
+
 end
