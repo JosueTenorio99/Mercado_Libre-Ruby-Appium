@@ -1,6 +1,11 @@
+cat >> .gitignore << 'EOF'
+# macOS
+.DS_Store
+
 # JetBrains / RubyMine
 .idea/
-# Ruby / Bundler
+
+# Ruby / Bundler / RSpec
 /vendor/bundle/
 /.bundle/
 /coverage/
@@ -10,5 +15,5 @@
 /pkg/
 /yardoc/
 /.byebug_history
-# Sistemas
-.DS_Store
+.rspec_status
+EOF
