@@ -1,0 +1,14 @@
+# JetBrains / RubyMine
+.idea/
+# Ruby / Bundler
+/vendor/bundle/
+/.bundle/
+/coverage/
+/doc/
+/log/
+/tmp/
+/pkg/
+/yardoc/
+/.byebug_history
+# Sistemas
+.DS_Store
