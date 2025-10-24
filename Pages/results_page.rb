@@ -2,31 +2,46 @@
 require_relative 'base_page'
 require_relative '../Locators/results_locators'
 
+# ======================================
+# ResultsPage
+# Handles search results interactions and product collection.
+# Optimized for fast execution — assumes stable and interactable UI.
+# ======================================
 class ResultsPage < BasePage
   include ResultsLocators
 
-  def click_FILTER_BUTTON(timeout: 5)
+  # ===== Basic Actions =====
+  def click_FILTER_BUTTON
     remember_last_action(__method__)
-    click(FILTER_BUTTON, timeout: timeout)
+    click(FILTER_BUTTON)
+  end
+
+  def click_DELIVERY_FULL
+    remember_last_action(__method__)
+    driver.find_element(*normalize(DELIVERY_FULL)).click rescue nil
     true
   end
 
-  def click_DELIVERY_FULL_if_present(timeout: 3)
+  def click_CONDITION_BUTTON
     remember_last_action(__method__)
-    el = try_find(DELIVERY_FULL, timeout: timeout)
-    el&.click
-    true
+    click(CONDITION_BUTTON)
   end
 
-  def click_CONDITION_BUTTON(timeout: 5)
+  def click_SORT_BY_BUTTON
     remember_last_action(__method__)
-    click(CONDITION_BUTTON, timeout: timeout)
-    true
+    click(SORT_BY_BUTTON)
   end
 
-  def click_OPTION_NEW(timeout: 5)
+  def click_VIEW_RESULTS_BUTTON
     remember_last_action(__method__)
-    click(OPTION_NEW, timeout: timeout)
+    click(VIEW_RESULTS_BUTTON)
+  end
+
+  # ===== Scroll Helpers =====
+  def scroll_until_OPTION_NEW(max_swipes: 16)
+    remember_last_action(__method__)
+    found = scroll_until(OPTION_NEW, max_swipes: max_swipes, column_index: 1)
+    raise Selenium::WebDriver::Error::NoSuchElementError, 'OPTION_NEW not visible after scrolling' unless found
     true
   end
 
@@ -37,86 +52,100 @@ class ResultsPage < BasePage
     true
   end
 
-  def click_SORT_BY_BUTTON(timeout: 5)
+  def scroll_until_SORT_BY_PRICE_DESC_BTN(max_swipes: 16)
     remember_last_action(__method__)
-    click(SORT_BY_BUTTON, timeout: timeout)
+    found = scroll_until(SORT_BY_PRICE_DESC_BTN, max_swipes: max_swipes, column_index: 1)
+    raise Selenium::WebDriver::Error::NoSuchElementError, 'SORT_BY_PRICE_DESC_BTN not visible after scrolling' unless found
     true
   end
 
-  def click_SORT_BY_PRICE_DESC_BTN(timeout: 5)
+  # ===== Problematic Buttons (simplified for Fast Mode) =====
+  def click_OPTION_NEW
     remember_last_action(__method__)
-    click(SORT_BY_PRICE_DESC_BTN, timeout: timeout)
-    true
+    click(OPTION_NEW)
   end
 
-  def click_VIEW_RESULTS_BUTTON(timeout: 5)
+  def click_SORT_BY_PRICE_DESC_BTN
     remember_last_action(__method__)
-    click(VIEW_RESULTS_BUTTON, timeout: timeout)
-    true
+    begin
+      scroll_until_SORT_BY_PRICE_DESC_BTN
+    rescue StandardError
+      # ignore if already visible
+    end
+    click(SORT_BY_PRICE_DESC_BTN)
   end
 
-  # Robust results reader with deduplication
+  # ===== Product Collection =====
   def collect_products_and_prices(max: 5, term: nil)
     remember_last_action(__method__)
     prev_wait = (driver.manage.timeouts.implicit_wait rescue nil)
     driver.manage.timeouts.implicit_wait = 0.8 rescue nil
 
-    extractor = lambda do |card|
-      # Prefer an explicit "now price"; fallback to any price candidate
-      price_el = begin
-                   p = card.find_elements(xpath: PRICE_NOW_XPATH).first
-                   p ||= card.find_elements(xpath: PRICE_ANY_XPATH).last
-                   p
-                 rescue StandardError
-                   nil
-                 end
-      return nil if price_el.nil?
+    results = {}
+    products, prices = [], []
 
-      # Title by id or heuristic (must be visually above the price)
-      name_el = begin
-                  by_id = card.find_elements(xpath: TITLE_ID_IN_CARD_XPATH)
-                  if by_id.any?
-                    by_id.first
-                  else
-                    candidates = card.find_elements(xpath: TITLE_ANY_IN_CARD_XP)
-                    candidates = candidates.select { |e| looks_like_title?(e.text) }
-                    candidates = candidates.select { |e| center_y(e) < center_y(price_el) }
-                    largest_by_bounds(candidates)
-                  end
-                rescue StandardError
-                  nil
-                end
+    extractor = lambda do |card|
+      texts = card.find_elements(xpath: './/android.widget.TextView')
+      price_el = texts.find { |el| el.text =~ /\$/ }
+      return nil unless price_el
+
+      price_y = center_y(price_el)
+
+      candidates = texts.select do |el|
+        txt = el.text.strip
+        next false if txt.empty?
+        next false if txt =~ /\$/ || txt.length < 10
+        next false if txt =~ /(envío|gratis|opción|compra|vendidos|meses|intereses|full|mejor precio|tienda|oficial)/i
+        next false unless txt =~ /[A-Za-z]/
+        next false unless txt =~ /[0-9]|playstation|ps5|sony|consola/i
+        center_y(el) < price_y
+      end
+
+      name_el = candidates.min_by { |el| (price_y - center_y(el)).abs }
       return nil unless name_el
 
-      name = name_el.text
-      return nil unless includes_ci?(name, term)
+      name  = name_el.text.strip
+      price = price_el.text.strip
+      return nil if name.empty? || price.empty?
 
-      price = price_el.attribute('content-desc') rescue nil
-      return nil if price.nil? || price.strip.empty?
+      price = price.gsub(/\[space\]|\[decimals\]/, '').gsub(/\s+/, ' ').strip
+      key = "#{name}|#{price}"
+      return nil if results.key?(key)
 
-      [name, price]
+      results[key] = true
+      [name, price, key]
+    rescue => e
+      warn "[WARN] Extractor error: #{e.message}"
+      nil
     end
 
-    productos, precios = first_n_by_scroll(
-      card_xpath:  POLYCARD_XPATH,
-      extractor:   extractor,
-      max:         max,
+    more_products, more_prices = first_n_by_scroll(
+      card_xpath: '//android.view.View[@resource-id="polycard_component"]',
+      extractor: extractor,
+      max: max,
       max_scrolls: 12
     )
 
-    puts "Products: #{productos.size}"
-    productos.each_with_index do |p, i|
-      puts "  #{i + 1}. #{p}"
-      puts "     $ #{precios[i]}"
-    end
+    products.concat(more_products).uniq!
+    prices.concat(more_prices).uniq!
 
-    { productos: productos, precios: precios }
+    products = products.first(max)
+    prices   = prices.first(max)
+
+    puts "\nProducts: #{products.size}"
+    products.each_with_index do |p, i|
+      price = prices[i] || "N/A"
+      puts "#{i + 1}. #{p}"
+      puts "   Price: #{price}\n\n"
+    end
+    puts
+
+    { products: products, prices: prices }
   ensure
     driver.manage.timeouts.implicit_wait = prev_wait rescue nil
   end
 
-  # Convenience alias in Spanish kept for compatibility
-  def obtener_productos_y_precios(max: 5, term: nil)
+  def get_products_and_prices(max: 5, term: nil)
     collect_products_and_prices(max: max, term: term)
   end
 end

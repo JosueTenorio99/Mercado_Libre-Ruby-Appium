@@ -1,6 +1,13 @@
 GEM
   remote: https://rubygems.org/
   specs:
+    allure-rspec (2.27.0)
+      allure-ruby-commons (= 2.27.0)
+      rspec-core (>= 3.8, < 4)
+    allure-ruby-commons (2.27.0)
+      mime-types (>= 3.3, < 4)
+      require_all (>= 2, < 4)
+      rspec-expectations (~> 3.12)
     appium_lib (12.2.2)
       appium_lib_core (~> 6.0)
       nokogiri (~> 1.8, >= 1.8.1)
@@ -15,9 +22,14 @@ GEM
       eventmachine (>= 0.12.0)
       websocket-driver (>= 0.5.1, < 0.8.0)
     logger (1.7.0)
+    mime-types (3.7.0)
+      logger
+      mime-types-data (~> 3.2025, >= 3.2025.0507)
+    mime-types-data (3.2025.0924)
     nokogiri (1.18.10-arm64-darwin)
       racc (~> 1.4)
     racc (1.8.1)
+    require_all (3.0.0)
     rexml (3.4.4)
     rspec (3.13.2)
       rspec-core (~> 3.13.0)
@@ -48,6 +60,7 @@ PLATFORMS
   arm64-darwin-25
 
 DEPENDENCIES
+  allure-rspec (~> 2.0)
   appium_lib (~> 12.0)
   logger
   rspec
