@@ -16,7 +16,7 @@ class ResultsPage < BasePage
     click(FILTER_BUTTON)
   end
 
-  def click_DELIVERY_FULL_if_present
+  def click_DELIVERY_FULL
     remember_last_action(__method__)
     driver.find_element(*normalize(DELIVERY_FULL)).click rescue nil
     true

@@ -25,7 +25,7 @@ RSpec.describe 'Mercado Libre Search Flow' do
     @results.click_FILTER_BUTTON
     @results.save_SCREENSHOT
 
-    @results.click_DELIVERY_FULL_if_present
+    @results.click_DELIVERY_FULL
     @results.save_SCREENSHOT
 
     @results.scroll_until_OPTION_NEW
