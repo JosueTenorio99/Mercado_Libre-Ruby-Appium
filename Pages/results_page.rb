@@ -171,3 +171,71 @@ class ResultsPage < BasePage
     collect_products_and_prices(max: max, term: term)
   end
 end
+
+def collect_by_scroll(card_xpath:, extractor:, max: 5, max_scrolls: 8)
+  products, prices = [], []
+  seen = Set.new
+  no_change = 0
+
+  max_scrolls.times do
+    cards = driver.find_elements(xpath: card_xpath)
+    cards.each do |card|
+      data = safe_call { extractor.call(card) }
+      next unless data
+      name, price, key = data
+      key ||= "#{name}|#{price}"
+      next if seen.include?(key)
+
+      seen << key
+      products << name
+      prices << price
+      return [products, prices] if products.size >= max
+    end
+
+    old_sig = page_signature
+    old_count = cards.size
+    break unless scroll_down(percent: 0.93)
+
+    changed = wait_until(timeout: 1.0, interval: 0.05) do
+      new_sig = page_signature
+      new_count = driver.find_elements(xpath: card_xpath).size
+      new_sig != old_sig || new_count > old_count
+    end
+
+    no_change = changed ? 0 : no_change + 1
+    break if no_change >= 2
+  end
+
+  [products, prices]
+end
+
+# =====================================================
+# Detecta cambio de DOM o aparición de nuevos elementos
+# =====================================================
+def wait_dom_change_or_new(card_xpath:, old_sig:, old_count:, timeout: 1.4, poll: 0.05)
+  deadline = monotonic_now + timeout
+  while monotonic_now < deadline
+    sig = page_signature
+    count = driver.find_elements(xpath: card_xpath).size
+    return :new_items if count > old_count
+    return :changed   if sig != old_sig
+    sleep poll
+  end
+  :no_change
+end
+
+# =====================================================
+# Calcula coordenadas y centro vertical de un elemento
+# =====================================================
+def bounds_rect(el)
+  b = safe_call { el.attribute('bounds') }
+  return [0, 0, 0, 0] unless b && b =~ /\[(\d+),(\d+)\]\[(\d+),(\d+)\]/
+  [$1.to_i, $2.to_i, $3.to_i, $4.to_i]
+end
+
+def center_y(el)
+  r = bounds_rect(el)
+  (r[1] + r[3]) / 2.0
+end
+
+

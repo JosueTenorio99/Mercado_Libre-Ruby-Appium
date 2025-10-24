@@ -196,3 +196,52 @@ RSpec.configure do |config|
     end
   end
 end
+
+def first_n_by_scroll(card_xpath:, extractor:, max:, max_scrolls: 8)
+  products = []
+  prices   = []
+  seen_keys = Set.new
+  consecutive_nochange = 0
+
+  max_scrolls.times do
+    # 1) Leer tarjetas visibles y extraer datos
+    cards = driver.find_elements(xpath: card_xpath)
+    cards.each do |card|
+      data = safe_call { extractor.call(card) }
+      next unless data
+
+      name, price, key = data
+      key ||= "#{name}|#{price}"
+      next if seen_keys.include?(key)
+
+      seen_keys << key
+      products << name
+      prices   << price
+
+      # Salida temprana cuando se alcanza el máximo
+      return [products.first(max), prices.first(max)] if products.size >= max
+    end
+
+    # 2) Preparar detección de cambio antes del scroll
+    old_sig   = page_signature
+    old_count = cards.size
+
+    # 3) Intentar scroll; si falla salimos (no hay más contenido)
+    break unless scroll_down(percent: 0.93)
+
+    # 4) Esperar cambio REAL (nuevos items o mutación del DOM) con timeout corto
+    change = wait_dom_change_or_new(
+      card_xpath: card_xpath,
+      old_sig: old_sig,
+      old_count: old_count,
+      timeout: 1.0,   # ↓ antes 2.0 — acelera los ciclos
+      poll: 0.04      # ↓ sondea más fino para cortar antes
+    )
+
+    # 5) Si no cambió nada dos veces seguidas, paramos
+    consecutive_nochange = (change == :no_change) ? (consecutive_nochange + 1) : 0
+    break if consecutive_nochange >= 2
+  end
+
+  [products.first(max), prices.first(max)]
+end
