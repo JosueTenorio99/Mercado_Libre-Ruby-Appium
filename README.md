@@ -1,5 +1,3 @@
----
-
 # Mercado_Libre-Ruby-Appium
 
 > **Note:** A full **Spanish** version of this README is included **right below** the English version.
