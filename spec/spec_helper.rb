@@ -8,14 +8,20 @@ require 'fileutils'
 require 'base64'
 require 'open3'
 
+# ==============================
+# Allure configuration
+# ==============================
 Allure.configure do |c|
   c.results_directory = 'reports/allure-results'
   c.clean_results_directory = true
 end
 
-# Permite desactivar video si se desea: RECORD_VIDEO=0 bundle exec rspec
+# Allows disabling screen recording: RECORD_VIDEO=0 bundle exec rspec
 RECORD_VIDEO = ENV.fetch('RECORD_VIDEO', '1') == '1'
 
+# ==============================
+# RSpec configuration
+# ==============================
 RSpec.configure do |config|
   # --- Formatters ---
   config.add_formatter 'AllureRspecFormatter'
@@ -33,55 +39,42 @@ RSpec.configure do |config|
     Appium.promote_appium_methods Object
   end
 
-  config.before(:each) do
-    Thread.current[:screenshot_index] = 0
-  end
-
   config.after(:suite) do
     $driver.quit rescue nil if $driver&.session_id
   end
 
-  # --- Screenshots on failure ---
-  def current_test_class_name_from(example)
-    if example.example_group.respond_to?(:described_class) && example.example_group.described_class
-      example.example_group.described_class.name
-    else
-      file = example.file_path rescue nil
-      return 'UnknownSpec' unless file
-      base = File.basename(file, '.rb').sub(/_spec\z/, '')
-      camel = base.split(/[^0-9A-Za-z]+/).map { |s| s.capitalize }.join
-      camel.empty? ? 'UnknownSpec' : "#{camel}Spec"
-    end
-  end
-
-  def save_failure_screenshot(driver, example)
-    klass = current_test_class_name_from(example)
-    folder = File.join('screenshots', klass)
-    FileUtils.mkdir_p(folder) rescue nil
-    idx = (Thread.current[:screenshot_index] = (Thread.current[:screenshot_index] || 0) + 1)
-    timestamp = Time.now.strftime('%Y%m%d-%H%M%S-%L')
-    path = File.join(folder, format('%02d_failure_%s.png', idx, timestamp))
-
-    if driver.respond_to?(:save_screenshot)
-      driver.save_screenshot(path)
-    elsif driver.respond_to?(:screenshot_as)
-      File.open(path, 'wb') { |f| f.write(Base64.decode64(driver.screenshot_as(:base64))) }
-    end
-  rescue => e
-    warn "[WARN] save_failure_screenshot failed: #{e.message}"
-  end
+  # ==============================
+  # Screenshot handling (refactored)
+  # ==============================
+  #
+  # Screenshots are now handled by BasePage/ReportsHelpers#save_SCREENSHOT,
+  # which stores them in-memory and attaches directly to Allure.
+  #
+  # Therefore, all code that manually creates "screenshots/" folders was removed.
+  #
+  # If you still want to capture automatically on failure,
+  # use @page.save_SCREENSHOT instead of driver.save_screenshot.
 
   config.after(:each) do |example|
-    if example.exception && $driver&.session_id
-      save_failure_screenshot($driver, example)
+    # Optional automatic screenshot capture on test failure
+    if example.exception && defined?(@page)
+      begin
+        @page.save_SCREENSHOT(name: "FAILED - #{example.description}")
+      rescue => e
+        warn "[Allure] Screenshot capture failed: #{e.message}"
+      end
     end
+
+    # Terminate app after each test (clean state)
     if $driver&.session_id
       pkg = CONFIG[:appPackage] rescue nil
       $driver.terminate_app(pkg) rescue nil if pkg
     end
   end
 
-  # --- Add Allure custom CSS ---
+  # ==============================
+  # Add custom CSS to Allure reports
+  # ==============================
   def add_allure_custom_style
     css_dir = File.join('reports', 'allure-report')
     css_file = File.join(css_dir, 'styles.css')
@@ -108,7 +101,9 @@ RSpec.configure do |config|
     File.open(css_file, 'a') { |f| f.puts css_code }
   end
 
-  # --- Video recording (via Appium) ---
+  # ==============================
+  # Video recording (via Appium)
+  # ==============================
   config.before(:each) do |_example|
     next unless RECORD_VIDEO
     begin
@@ -126,6 +121,7 @@ RSpec.configure do |config|
       if $driver.respond_to?(:stop_recording_screen)
         base64_video = $driver.stop_recording_screen rescue nil
 
+        # Only attach videos for failed tests
         if example.exception && base64_video && !base64_video.empty?
           video_dir  = File.join('reports', 'videos')
           FileUtils.mkdir_p(video_dir) rescue nil
@@ -135,6 +131,7 @@ RSpec.configure do |config|
 
           File.open(video_path, 'wb') { |f| f.write(Base64.decode64(base64_video)) }
 
+          # Compress/scale video for size reduction
           system("ffmpeg -y -i \"#{video_path}\" -vf scale=540:960 \"#{video_path}.tmp.mp4\" > /dev/null 2>&1")
           if File.exist?("#{video_path}.tmp.mp4")
             FileUtils.mv("#{video_path}.tmp.mp4", video_path)
@@ -156,8 +153,9 @@ RSpec.configure do |config|
   end
   # --- End of video recording ---
 
-
-  # --- Capture STDOUT/STDERR and attach to Allure ---
+  # ==============================
+  # Capture STDOUT/STDERR and attach to Allure
+  # ==============================
   config.around(:each) do |example|
     require 'stringio'
     old_stdout, old_stderr = $stdout, $stderr
@@ -167,8 +165,14 @@ RSpec.configure do |config|
       def initialize(console, capture)
         @console, @capture = console, capture
       end
-      def write(str); @console.write(str); @capture.write(str); end
-      def flush; @console.flush; @capture.flush; end
+      def write(str)
+        @console.write(str)
+        @capture.write(str)
+      end
+      def flush
+        @console.flush
+        @capture.flush
+      end
     end
 
     $stdout = writer.new(old_stdout, buffer)
@@ -195,53 +199,4 @@ RSpec.configure do |config|
       ) rescue nil
     end
   end
-end
-
-def first_n_by_scroll(card_xpath:, extractor:, max:, max_scrolls: 8)
-  products = []
-  prices   = []
-  seen_keys = Set.new
-  consecutive_nochange = 0
-
-  max_scrolls.times do
-    # 1) Leer tarjetas visibles y extraer datos
-    cards = driver.find_elements(xpath: card_xpath)
-    cards.each do |card|
-      data = safe_call { extractor.call(card) }
-      next unless data
-
-      name, price, key = data
-      key ||= "#{name}|#{price}"
-      next if seen_keys.include?(key)
-
-      seen_keys << key
-      products << name
-      prices   << price
-
-      # Salida temprana cuando se alcanza el máximo
-      return [products.first(max), prices.first(max)] if products.size >= max
-    end
-
-    # 2) Preparar detección de cambio antes del scroll
-    old_sig   = page_signature
-    old_count = cards.size
-
-    # 3) Intentar scroll; si falla salimos (no hay más contenido)
-    break unless scroll_down(percent: 0.93)
-
-    # 4) Esperar cambio REAL (nuevos items o mutación del DOM) con timeout corto
-    change = wait_dom_change_or_new(
-      card_xpath: card_xpath,
-      old_sig: old_sig,
-      old_count: old_count,
-      timeout: 1.0,   # ↓ antes 2.0 — acelera los ciclos
-      poll: 0.04      # ↓ sondea más fino para cortar antes
-    )
-
-    # 5) Si no cambió nada dos veces seguidas, paramos
-    consecutive_nochange = (change == :no_change) ? (consecutive_nochange + 1) : 0
-    break if consecutive_nochange >= 2
-  end
-
-  [products.first(max), prices.first(max)]
 end
