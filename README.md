@@ -1,7 +1,10 @@
 # Mercado_Libre-Ruby-Appium
 
-> **Note:** A full **Spanish** version of this README is included **right below** the English version.
+---
 
+> **Nota:** La **versión en español** de este README se encuentra **justo debajo** de la versión en inglés.
+
+---
 Automated functional test for the **Mercado Libre** Android app using **Ruby + Appium**.
 The scenario validates **search** → **filters** → **sorting** and extracts the **first 5 product names and prices**, printing them to the console and attaching them to an **Allure HTML report** (with screenshots; on failure, a video is also saved and attached).
 
