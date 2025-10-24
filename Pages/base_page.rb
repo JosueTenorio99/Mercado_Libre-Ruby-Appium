@@ -1,8 +1,8 @@
 # path: pages/base_page.rb
-require 'fileutils'
 require 'base64'
 require 'set'
 require 'tempfile'
+
 
 class BasePage
   attr_reader :driver
@@ -17,10 +17,6 @@ class BasePage
 
   def last_action_name
     @__last_action || 'unknown_action'
-  end
-
-  def next_screenshot_index
-    Thread.current[:screenshot_index] = (Thread.current[:screenshot_index] || 0) + 1
   end
 
   def wait_until(timeout: 3.0, interval: 0.10)
@@ -154,22 +150,25 @@ class BasePage
 
   def save_SCREENSHOT(name: nil, folder: nil, wait_for_idle: true, settle_ms: 180)
     settle_for_screenshot(settle_ms: settle_ms) if wait_for_idle
-    test_class  = current_test_class_name
-    base_folder = folder || File.join("screenshots", test_class)
-    FileUtils.mkdir_p(base_folder) rescue nil
 
-    idx       = next_screenshot_index
-    prefix    = format("%02d", idx)
-    timestamp = Time.now.strftime("%Y%m%d-%H%M%S-%L")
-    base      = (name && !name.to_s.empty?) ? name.to_s : last_action_name
-    filename  = "#{prefix}_#{base}_#{timestamp}.png"
-    path      = File.join(base_folder, filename)
+    base = (name && !name.to_s.empty?) ? name.to_s : last_action_name
 
-    write_screenshot!(path)
+    # Toma la captura directamente en Base64, sin guardar archivo local
+    png_data = nil
+    drv = driver
+    if drv.respond_to?(:screenshot_as)
+      png_data = Base64.decode64(drv.screenshot_as(:base64))
+    elsif drv.respond_to?(:save_screenshot)
+      Tempfile.create(["allure_screenshot_", ".png"]) do |tmp|
+        drv.save_screenshot(tmp.path)
+        png_data = File.binread(tmp.path)
+      end
+    elsif drv.respond_to?(:driver) && drv.driver.respond_to?(:screenshot_as)
+      png_data = Base64.decode64(drv.driver.screenshot_as(:base64))
+    end
 
-    if defined?(Allure)
+    if defined?(Allure) && png_data
       begin
-        png_data = File.binread(path)
         Tempfile.create(["allure_attachment_", ".png"]) do |tmp|
           tmp.binmode
           tmp.write(png_data)
@@ -182,11 +181,14 @@ class BasePage
           )
         end
       rescue => e
-        warn "[Allure] Failed to attach screenshot #{path}: #{e.class}: #{e.message}"
+        warn "[Allure] Failed to attach screenshot: #{e.class}: #{e.message}"
       end
     end
-    path
+
+    # Ya no se crea carpeta ni archivo físico
+    nil
   end
+
 
   def attach_text_to_allure(name, text)
     Allure.add_attachment(
@@ -433,35 +435,6 @@ class BasePage
       end
     rescue StandardError
     end
-  end
-
-  def write_screenshot!(path)
-    drv = driver
-    if drv.respond_to?(:save_screenshot)
-      drv.save_screenshot(path)
-      return
-    end
-    if drv.respond_to?(:screenshot_as)
-      File.open(path, 'wb') { |f| f.write(Base64.decode64(drv.screenshot_as(:base64))) }
-      return
-    end
-    if drv.respond_to?(:driver) && drv.driver.respond_to?(:save_screenshot)
-      drv.driver.save_screenshot(path)
-      return
-    end
-    raise NoMethodError, 'No public screenshot method available (save_screenshot / screenshot_as).'
-  end
-
-  def current_test_class_name
-    return 'UnknownSpec' unless defined?(RSpec) && RSpec.respond_to?(:current_example) && RSpec.current_example
-    group = RSpec.current_example.example_group rescue nil
-    klass = group&.described_class
-    return klass.name if klass && klass.respond_to?(:name) && klass.name
-    file = RSpec.current_example.file_path rescue nil
-    return 'UnknownSpec' unless file
-    base = File.basename(file, '.rb').sub(/_spec\z/, '')
-    camel = base.split(/[^0-9A-Za-z]+/).map { |s| s.capitalize }.join
-    camel.empty? ? 'UnknownSpec' : "#{camel}Spec"
   end
 
   def normalize(locator)
