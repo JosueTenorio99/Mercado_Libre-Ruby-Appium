@@ -2,15 +2,9 @@
 require_relative 'base_page'
 require_relative '../Locators/results_locators'
 
-# ======================================
-# ResultsPage
-# Handles search results interactions and product collection.
-# Optimized for fast execution — assumes stable and interactable UI.
-# ======================================
 class ResultsPage < BasePage
   include ResultsLocators
 
-  # ===== Basic Actions =====
   def click_FILTER_BUTTON
     remember_last_action(__method__)
     click(FILTER_BUTTON)
@@ -37,7 +31,6 @@ class ResultsPage < BasePage
     click(VIEW_RESULTS_BUTTON)
   end
 
-  # ===== Scroll Helpers =====
   def scroll_until_OPTION_NEW(max_swipes: 16)
     remember_last_action(__method__)
     found = scroll_until(OPTION_NEW, max_swipes: max_swipes, column_index: 1)
@@ -59,7 +52,6 @@ class ResultsPage < BasePage
     true
   end
 
-  # ===== Problematic Buttons (simplified for Fast Mode) =====
   def click_OPTION_NEW
     remember_last_action(__method__)
     click(OPTION_NEW)
@@ -70,12 +62,10 @@ class ResultsPage < BasePage
     begin
       scroll_until_SORT_BY_PRICE_DESC_BTN
     rescue StandardError
-      # ignore if already visible
     end
     click(SORT_BY_PRICE_DESC_BTN)
   end
 
-  # ===== Product Collection =====
   def collect_products_and_prices(max: 5, term: nil)
     remember_last_action(__method__)
     prev_wait = (driver.manage.timeouts.implicit_wait rescue nil)
@@ -85,23 +75,19 @@ class ResultsPage < BasePage
     products, prices = [], []
 
     extractor = lambda do |card|
-      texts = card.find_elements(xpath: './/android.widget.TextView')
-      price_el = texts.find { |el| el.text =~ /\$/ }
+      price_el = card.find_elements(xpath: PRICE_NOW_XPATH).first
+      price_el ||= card.find_elements(xpath: PRICE_ANY_XPATH)
+                      .reject { |el| el.attribute('content-desc') =~ /antes/i }
+                      .first
       return nil unless price_el
 
       price_y = center_y(price_el)
 
-      candidates = texts.select do |el|
-        txt = el.text.strip
-        next false if txt.empty?
-        next false if txt =~ /\$/ || txt.length < 10
-        next false if txt =~ /(envío|gratis|opción|compra|vendidos|meses|intereses|full|mejor precio|tienda|oficial)/i
-        next false unless txt =~ /[A-Za-z]/
-        next false unless txt =~ /[0-9]|playstation|ps5|sony|consola/i
-        center_y(el) < price_y
-      end
-
-      name_el = candidates.min_by { |el| (price_y - center_y(el)).abs }
+      name_el = card.find_elements(xpath: TITLE_ID_IN_CARD_XPATH).first ||
+                 card.find_elements(xpath: TITLE_ANY_IN_CARD_XP).find do |el|
+                   txt = el.text.strip
+                   txt.match?(/(playstation|ps5|sony|consola)/i)
+                 end
       return nil unless name_el
 
       name  = name_el.text.strip
