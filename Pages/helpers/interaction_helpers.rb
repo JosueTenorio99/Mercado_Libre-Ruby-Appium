@@ -6,14 +6,25 @@
 # ======================================
 
 module InteractionHelpers
+    include WaitHelpers
   # Clicks an element directly using its locator.
   # Expects the element to already be visible and interactable.
-  def click(locator)
-    driver.find_element(*normalize(locator)).click
-    true
-  rescue Selenium::WebDriver::Error::NoSuchElementError
-    raise "Element not found for locator: #{locator.inspect}"
+def click(locator, timeout: 10)
+  wait_until(timeout: timeout) do
+    begin
+      el = find(locator)
+      el.displayed? && el.enabled?
+    rescue Selenium::WebDriver::Error::NoSuchElementError
+      false
+    end
   end
+
+  find(locator).click
+  true
+rescue Selenium::WebDriver::Error::TimeoutError
+  raise "Timeout waiting for element: #{locator.inspect}"
+end
+
 
   # Finds and returns a single element.
   def find(locator)
